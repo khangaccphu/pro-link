@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Link4M Bypasser</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #12151c;
+    --panel-2: #171b24;
+    --line: #232838;
+    --text: #e6ebf5;
+    --muted: #8a93a8;
+    --accent: #6c7cff;
+    --accent-2: #9b6cff;
+    --ok: #34d399;
+    --err: #f87171;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; min-height: 100%;
+    background: radial-gradient(1200px 600px at 50% -10%, #1a1f2e 0%, var(--bg) 60%);
+    color: var(--text);
+    font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 60px 24px 80px; }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  .dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    box-shadow: 0 0 20px var(--accent);
+  }
+  h1 { font-size: 28px; margin: 0; font-weight: 700; letter-spacing: -.02em; }
+  .sub { color: var(--muted); margin: 6px 0 36px; font-size: 14px; }
+  .card {
+    background: linear-gradient(180deg, var(--panel-2), var(--panel));
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 24px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.45);
+  }
+  label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 8px; }
+  .row { display: flex; gap: 10px; }
+  input[type="text"] {
+    flex: 1;
+    background: #0d1017;
+    border: 1px solid var(--line);
+    color: var(--text);
+    padding: 14px 16px;
+    border-radius: 10px;
+    font-size: 15px;
+    outline: none;
+    transition: border-color .15s;
+  }
+  input[type="text"]:focus { border-color: var(--accent); }
+  button {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    border: none; color: #fff;
+    padding: 14px 22px;
+    border-radius: 10px;
+    font-size: 15px; font-weight: 600;
+    cursor: pointer;
+    transition: transform .1s, opacity .15s;
+    white-space: nowrap;
+  }
+  button:hover { opacity: .92; }
+  button:active { transform: scale(.98); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .result {
+    margin-top: 22px;
+    padding: 18px;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    background: #0d1017;
+    display: none;
+    animation: fade .25s ease;
+  }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px);} to { opacity: 1; transform: none;} }
+  .result.show { display: block; }
+  .result .label {
+    font-size: 12px; color: var(--muted); margin-bottom: 6px;
+    letter-spacing: .04em; text-transform: uppercase;
+  }
+  .link-box {
+    display: flex; align-items: center; gap: 10px;
+    background: #080a10;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 14px;
+    word-break: break-all;
+  }
+  .link-box a {
+    color: var(--ok);
+    text-decoration: none;
+    flex: 1;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 13.5px;
+  }
+  .link-box a:hover { text-decoration: underline; }
+  .meta { margin-top: 10px; font-size: 12px; color: var(--muted); }
+  .meta span { color: var(--accent); }
+  .actions { display: flex; gap: 8px; margin-top: 12px; }
+  .actions button {
+    padding: 8px 14px; font-size: 13px;
+    background: #1c2130; color: var(--text); font-weight: 500;
+  }
+  .actions button:hover { background: #232a3d; }
+  .err { color: var(--err); font-size: 14px; }
+  .spinner {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid rgba(255,255,255,.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+    vertical-align: -2px;
+    margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  footer {
+    margin-top: 40px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  code { color: var(--accent); font-family: ui-monospace, Menlo, monospace; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand">
+      <div class="dot"></div>
+      <h1>Link4M Bypasser</h1>
+    </div>
+    <p class="sub">Dán link link4m — lấy link gốc. Nhanh, gọn, có API.</p>
+
+    <div class="card">
+      <label for="url">Link link4m</label>
+      <div class="row">
+        <input id="url" type="text" placeholder="https://link4m.co/xxxxxxx" autocomplete="off" spellcheck="false" />
+        <button id="go">Bypass</button>
+      </div>
+      <div id="result" class="result"></div>
+    </div>
+
+    <footer>API: <code>POST /api/bypass</code> · { "url": "..." }</footer>
+  </div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const input = $("#url");
+const btn = $("#go");
+const res = $("#result");
+
+function showLoading() {
+  res.className = "result show";
+  res.innerHTML = `<span class="spinner"></span><span style="color:var(--muted)">Đang xử lý...</span>`;
+}
+function showError(msg) {
+  res.className = "result show";
+  res.innerHTML = `<div class="err">✕ ${msg}</div>`;
+}
+function showResult(data) {
+  res.className = "result show";
+  res.innerHTML = `
+    <div class="label">Link gốc</div>
+    <div class="link-box">
+      <a href="${data.original}" target="_blank" rel="noopener">${data.original}</a>
+      <button id="copy">Copy</button>
+    </div>
+    <div class="meta">Phương thức: <span>${data.method}</span></div>
+    <div class="actions">
+      <button id="open">Mở link</button>
+      <button id="again">Làm lại</button>
+    </div>
+  `;
+  $("#copy").onclick = () => {
+    navigator.clipboard.writeText(data.original);
+    $("#copy").textContent = "Đã copy";
+    setTimeout(() => $("#copy").textContent = "Copy", 1200);
+  };
+  $("#open").onclick = () => window.open(data.original, "_blank");
+  $("#again").onclick = () => { input.value = ""; input.focus(); res.className = "result"; };
+}
+
+async function run() {
+  const url = input.value.trim();
+  if (!url) return;
+  if (!url.includes("link4m.")) {
+    showError("Link không phải link4m.");
+    return;
+  }
+  btn.disabled = true;
+  showLoading();
+  try {
+    const r = await fetch("/api/bypass", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url })
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || "Lỗi không xác định");
+    showResult(j);
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+btn.onclick = run;
+input.addEventListener("keydown", (e) => { if (e.key === "Enter") run(); });
+input.focus();
+</script>
+</body>
+</html>
