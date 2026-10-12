@@ -1,0 +1,8 @@
+{
+  "name": "link4m-bypasser",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  }
+}
