@@ -1,212 +1,198 @@
-// Vercel serverless function — Node.js runtime
-// Node 18+ trên Vercel có fetch global + Buffer. Không cần dependency ngoài.
+// Vercel serverless function
+// Bypass link4m.net (flow: get-advertise → check-captcha)
 
-const DEFAULT_HEADERS = {
-  "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-    "(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
-  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-  "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
-  Referer: "https://link4m.co/",
-};
+const UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36";
 
-const RE_WINDOW_LOC = /window\.location(?:\.href)?\s*=\s*["']([^"']+)["']/i;
-const RE_VAR_URL =
-  /(?:var|let|const)\s+(?:url|link|target|dest|_url)\s*=\s*["']([^"']+)["']/i;
-const RE_META_REFRESH =
-  /<meta[^>]+http-equiv=["']refresh["'][^>]+content=["'][^;]+;\s*url=([^"']+)["']/i;
-const RE_B64 = /(?:atob|decodeURIComponent)\(\s*["']([A-Za-z0-9+/=]+)["']\s*\)/;
-const RE_RAW_URL = /https?:\/\/[^\s"'<>\\]+/g;
+const CAPSOLVER_KEY = process.env.CAPSOLVER_KEY || ""; // set trong Vercel env
 
-const BAD_DOMAINS = [
-  "link4m.", "link4m.co", "google.", "gstatic.", "doubleclick.",
-  "facebook.", "cloudflare.", "googleapis.", "ads", "banner",
-];
-
-function clean(url) {
-  return url.trim().replace(/&amp;/g, "&");
+function parseAttrs(html) {
+  const aliasM = html.match(/data-alias\s*=\s*["']([^"']+)["']/);
+  const codeM = html.match(/data-code\s*=\s*["']([^"']+)["']/);
+  const apiM = html.match(/api_domain\s*=\s*['"]([^'"]+)['"]/);
+  const sitekeyM = html.match(/recaptcha_key\s*=\s*['"]([^'"]+)['"]/);
+  return {
+    alias: aliasM?.[1] || null,
+    code: codeM?.[1] || null,
+    apiDomain: apiM?.[1] || "https://s1.link4m.app",
+    sitekey: sitekeyM?.[1] || "6LcQsTQgAAAAADNQ_pCfukfvS0i9lk4oJTVSs5bZ",
+  };
 }
 
-function isGood(url) {
-  if (!url || !url.startsWith("http")) return false;
-  const low = url.toLowerCase();
-  return !BAD_DOMAINS.some((b) => low.includes(b));
+async function getAdvertise(apiDomain, alias, code, cookies) {
+  const r = await fetch(`${apiDomain}/api/campaign/get-advertise`, {
+    method: "POST",
+    headers: {
+      "User-Agent": UA,
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      "X-Requested-With": "XMLHttpRequest",
+      Origin: "https://link4m.net",
+      Referer: "https://link4m.net/",
+      Cookie: cookies || "",
+    },
+    body: new URLSearchParams({ alias, codes: code }).toString(),
+  });
+  if (!r.ok) throw new Error(`get-advertise HTTP ${r.status}`);
+  return r.json();
 }
 
-function extractFromHtml(html) {
-  let m = html.match(RE_WINDOW_LOC);
-  if (m && isGood(clean(m[1]))) return clean(m[1]);
+async function solveRecaptcha(sitekey, pageUrl, proxy) {
+  if (!CAPSOLVER_KEY) throw new Error("Chưa set CAPSOLVER_KEY");
 
-  m = html.match(RE_VAR_URL);
-  if (m && isGood(clean(m[1]))) return clean(m[1]);
+  const task = {
+    type: proxy ? "ReCaptchaV2Task" : "ReCaptchaV2TaskProxyLess",
+    websiteURL: pageUrl,
+    websiteKey: sitekey,
+  };
+  if (proxy) task.proxy = proxy;
 
-  m = html.match(RE_META_REFRESH);
-  if (m && isGood(clean(m[1]))) return clean(m[1]);
+  const create = await fetch("https://api.capsolver.com/createTask", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ clientKey: CAPSOLVER_KEY, task }),
+  }).then((r) => r.json());
 
-  m = html.match(RE_B64);
-  if (m) {
-    try {
-      const decoded = Buffer.from(m[1], "base64").toString("utf-8");
-      if (isGood(decoded)) return decoded;
-    } catch { /* ignore */ }
-  }
+  if (!create.taskId) throw new Error(`CapSolver tạo task fail: ${JSON.stringify(create)}`);
 
-  const raws = html.match(RE_RAW_URL) || [];
-  for (const raw of raws) {
-    if (isGood(clean(raw))) return clean(raw);
-  }
-  return null;
-}
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const res = await fetch("https://api.capsolver.com/getTaskResult", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clientKey: CAPSOLVER_KEY, taskId: create.taskId }),
+    }).then((r) => r.json());
 
-function extractToken(html) {
-  const data = { _method: "POST", adType: "", adUrl: "" };
-
-  // quét <input name="..." value="...">
-  const inputRe = /<input\b[^>]*>/gi;
-  const inputs = html.match(inputRe) || [];
-  for (const tag of inputs) {
-    const nameM = tag.match(/\bname\s*=\s*["']([^"']+)["']/i);
-    const valM = tag.match(/\bvalue\s*=\s*["']([^"']*)["']/i);
-    if (!nameM) continue;
-    const name = nameM[1];
-    const val = valM ? valM[1] : "";
-    if (name === "_token" || name === "token" || name === "hash") {
-      data["_token"] = val;
-    } else if (name === "adType") {
-      data["adType"] = val;
-    } else if (name === "adUrl") {
-      data["adUrl"] = val;
+    if (res.status === "ready") {
+      return res.solution.gRecaptchaResponse || res.solution.token;
     }
+    if (res.errorId) throw new Error(`CapSolver error: ${JSON.stringify(res)}`);
   }
-
-  // dò trong script nếu form không có
-  const tm = html.match(/_token\s*[:=]\s*["']([^"']+)["']/);
-  if (tm && !data["_token"]) data["_token"] = tm[1];
-
-  return data;
+  throw new Error("CapSolver timeout");
 }
 
-async function timedFetch(input, init, timeoutMs = 20000) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    return await fetch(input, { ...init, signal: ctrl.signal });
-  } finally {
-    clearTimeout(t);
-  }
+async function checkCaptcha(apiDomain, alias, code, token, cookies) {
+  const r = await fetch(`${apiDomain}/links/check-captcha`, {
+    method: "POST",
+    headers: {
+      "User-Agent": UA,
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      "X-Requested-With": "XMLHttpRequest",
+      Origin: "https://link4m.net",
+      Referer: `https://link4m.net/go/${alias}`,
+      Cookie: cookies || "",
+    },
+    body: new URLSearchParams({
+      alias,
+      code,
+      "g-recaptcha-response": token,
+    }).toString(),
+  });
+  if (!r.ok) throw new Error(`check-captcha HTTP ${r.status}`);
+  return r.json();
 }
 
-async function bypass(url) {
-  if (!url.includes("link4m.")) {
-    throw new Error("URL không phải link4m.");
-  }
-
-  let r;
-  try {
-    r = await timedFetch(url, {
-      method: "GET",
-      headers: DEFAULT_HEADERS,
-      redirect: "follow",
-    });
-  } catch (e) {
-    throw new Error(`Không request được: ${e.message}`);
-  }
-
-  const html1 = await r.text();
-  const hit1 = extractFromHtml(html1);
-  if (hit1) return { original: hit1, method: "html-parse", final_url: r.url };
-
-  const tokenData = extractToken(html1);
-  if (tokenData["_token"]) {
-    const goUrl = "https://link4m.co/links/go";
-    const body = new URLSearchParams(tokenData).toString();
-    try {
-      const r2 = await timedFetch(goUrl, {
-        method: "POST",
-        headers: {
-          ...DEFAULT_HEADERS,
-          "X-Requested-With": "XMLHttpRequest",
-          Origin: "https://link4m.co",
-          Referer: r.url,
-          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        },
-        body,
-        redirect: "follow",
-      });
-
-      const text2 = await r2.text();
-      try {
-        const j = JSON.parse(text2);
-        const target = j.url || j.link || j.target;
-        if (target && isGood(target)) {
-          return { original: target, method: "links-go-api", final_url: r2.url };
-        }
-      } catch { /* not json */ }
-
-      const hit2 = extractFromHtml(text2);
-      if (hit2) {
-        return { original: hit2, method: "links-go-html", final_url: r2.url };
-      }
-    } catch { /* fallthrough */ }
-  }
-
-  for (const param of ["?get=true", "?go=1", "?short=1"]) {
-    try {
-      const r3 = await timedFetch(r.url + param, {
-        method: "GET",
-        headers: DEFAULT_HEADERS,
-        redirect: "follow",
-      });
-      const html3 = await r3.text();
-      const hit3 = extractFromHtml(html3);
-      if (hit3) {
-        return { original: hit3, method: `get${param}`, final_url: r3.url };
-      }
-    } catch { /* continue */ }
-  }
-
-  if (isGood(r.url) && !r.url.includes("link4m.")) {
-    return { original: r.url, method: "final-redirect", final_url: r.url };
-  }
-
-  throw new Error("Không trích được link gốc. link4m có thể đã đổi cấu trúc.");
+function setCookiesFromResponse(r) {
+  // gom set-cookie thành 1 string
+  const sc = r.headers.getSetCookie ? r.headers.getSetCookie() : [];
+  return sc.map((c) => c.split(";")[0]).join("; ");
 }
 
-// ---- Vercel handler ----
-module.exports = async function handler(req, res) {
-  // CORS cho phép gọi từ domain khác nếu muốn
+export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method === "OPTIONS") {
-    res.status(204).end();
-    return;
-  }
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method === "GET")
+    return res.json({ ok: true, endpoint: "POST /api/bypass", body: { url: "..." } });
+  if (req.method !== "POST") return res.status(405).json({ detail: "Chỉ POST." });
 
-  if (req.method === "GET") {
-    res.status(200).json({ ok: true, endpoint: "/api/bypass", method: "POST" });
-    return;
-  }
-
-  if (req.method !== "POST") {
-    res.status(405).json({ detail: "Chỉ hỗ trợ POST." });
-    return;
-  }
-
-  // Vercel tự parse body JSON nếu Content-Type: application/json
   const body = req.body || {};
   const url = (body.url || "").toString().trim();
+  const proxy = (body.proxy || "").toString().trim(); // tuỳ chọn
 
-  if (!url) {
-    res.status(400).json({ detail: "Thiếu trường 'url'." });
-    return;
+  if (!/^https?:\/\/link4m\.(net|com|co)\//.test(url)) {
+    return res.status(400).json({ detail: "Chỉ hỗ trợ link4m.net/.com/.co" });
   }
 
   try {
-    const result = await bypass(url);
-    res.status(200).json(result);
+    // 1. GET page gốc
+    const r1 = await fetch(url, {
+      headers: {
+        "User-Agent": UA,
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
+      },
+      redirect: "follow",
+    });
+    if (!r1.ok) throw new Error(`GET page HTTP ${r1.status}`);
+    const html1 = await r1.text();
+    const cookies = setCookiesFromResponse(r1);
+    const { alias, code, apiDomain, sitekey } = parseAttrs(html1);
+
+    if (!alias || !code) {
+      // có thể link đã trả luôn
+      const direct = html1.match(/window\.location(?:\.href)?\s*=\s*["']([^"']+)["']/);
+      if (direct && !direct[1].includes("link4m.")) {
+        return res.json({ original: direct[1], method: "direct-html", final_url: url });
+      }
+      throw new Error("Không tìm thấy alias/code trong HTML.");
+    }
+
+    // 2. get-advertise
+    const adv = await getAdvertise(apiDomain, alias, code, cookies);
+
+    // nếu có window_url → đó là link gốc luôn
+    if (adv.window_url && !/link4m\./.test(adv.window_url)) {
+      return res.json({
+        original: adv.window_url,
+        method: "get-advertise-window-url",
+        final_url: url,
+      });
+    }
+
+    // nếu adv.html chứa link gốc (không cần captcha)
+    if (adv.html) {
+      const m = adv.html.match(/href\s*=\s*["'](https?:\/\/[^"']+)["']/);
+      if (m && !/link4m\./.test(m[1])) {
+        return res.json({ original: m[1], method: "advertise-html", final_url: url });
+      }
+    }
+
+    // 3. cần captcha → solve
+    if (!CAPSOLVER_KEY) {
+      throw new Error(
+        "Server yêu cầu captcha. Cần set CAPSOLVER_KEY trên Vercel để bypass tự động."
+      );
+    }
+
+    const token = await solveRecaptcha(
+      sitekey,
+      `https://link4m.net/go/${alias}`,
+      proxy || null
+    );
+
+    // 4. check-captcha
+    const check = await checkCaptcha(apiDomain, alias, code, token, cookies);
+
+    if (check.success && check.url && !/link4m\./.test(check.url)) {
+      return res.json({
+        original: check.url,
+        method: "captcha-solved",
+        final_url: url,
+      });
+    }
+
+    if (check.html) {
+      const m = check.html.match(/href\s*=\s*["'](https?:\/\/[^"']+)["']/);
+      if (m && !/link4m\./.test(m[1])) {
+        return res.json({ original: m[1], method: "captcha-html", final_url: url });
+      }
+    }
+
+    throw new Error(`Không trích được link. Response: ${JSON.stringify(check).slice(0, 300)}`);
   } catch (e) {
-    res.status(400).json({ detail: e.message || "Lỗi không xác định." });
+    res.status(400).json({ detail: e.message || "Lỗi không xác định" });
   }
-};
+}
